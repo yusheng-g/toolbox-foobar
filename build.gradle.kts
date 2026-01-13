@@ -1,14 +1,15 @@
-import com.fasterxml.jackson.databind.SerializationFeature
-import com.fasterxml.jackson.module.kotlin.jacksonMapperBuilder
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.github.jk1.license.filter.ExcludeTransitiveDependenciesFilter
 import com.github.jk1.license.render.JsonReportRenderer
 import com.jetbrains.plugin.structure.toolbox.ToolboxMeta
 import com.jetbrains.plugin.structure.toolbox.ToolboxPluginDescriptor
 import org.jetbrains.intellij.pluginRepository.PluginRepositoryFactory
+import org.jetbrains.intellij.pluginRepository.model.LicenseUrl
 import org.jetbrains.intellij.pluginRepository.model.ProductFamily
 import org.jetbrains.kotlin.com.intellij.openapi.util.SystemInfoRt
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.nio.file.Path
+import java.util.Properties
 import kotlin.io.path.createDirectories
 import kotlin.io.path.div
 import kotlin.io.path.writeText
@@ -18,25 +19,19 @@ plugins {
     alias(libs.plugins.serialization)
     `java-library`
     alias(libs.plugins.dependency.license.report)
-    alias(libs.plugins.ksp)
     alias(libs.plugins.gradle.wrapper)
-    alias(libs.plugins.changelog)
     alias(libs.plugins.gettext)
-    alias(libs.plugins.detekt)
 }
-
 
 repositories {
     mavenCentral()
     maven("https://packages.jetbrains.team/maven/p/tbx/toolbox-api")
-    maven("https://packages.jetbrains.team/maven/p/ij/intellij-dependencies")
 }
 
 buildscript {
     repositories {
         mavenCentral()
     }
-
     dependencies {
         classpath(libs.marketplace.client)
         classpath(libs.plugin.structure)
@@ -46,8 +41,7 @@ buildscript {
 jvmWrapper {
     unixJvmInstallDir = "jvm"
     winJvmInstallDir = "jvm"
-    linuxAarch64JvmUrl =
-        "https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-21.0.5-linux-aarch64-b631.28.tar.gz"
+    linuxAarch64JvmUrl = "https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-21.0.5-linux-aarch64-b631.28.tar.gz"
     linuxX64JvmUrl = "https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-21.0.5-linux-x64-b631.28.tar.gz"
     macAarch64JvmUrl = "https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-21.0.5-osx-aarch64-b631.28.tar.gz"
     macX64JvmUrl = "https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-21.0.5-osx-x64-b631.28.tar.gz"
@@ -58,44 +52,6 @@ dependencies {
     compileOnly(libs.bundles.toolbox.plugin.api)
     compileOnly(libs.bundles.serialization)
     compileOnly(libs.coroutines.core)
-    implementation(libs.okhttp)
-    implementation(libs.exec)
-    implementation(libs.moshi)
-    ksp(libs.moshi.codegen)
-    implementation(libs.retrofit)
-    implementation(libs.retrofit.moshi)
-    implementation(libs.bundles.bouncycastle)
-    testImplementation(kotlin("test"))
-    testImplementation(libs.mokk)
-    testImplementation(libs.bundles.toolbox.plugin.api)
-}
-
-val extension = ExtensionJson(
-    id = properties("group"),
-
-    version = properties("version"),
-    meta = ExtensionJsonMeta(
-        name = "Foobar",
-        description = "This is only used to test the steps for publishing plugins",
-        vendor = "yusheng-g",
-        url = "https://github.com/yusheng-g/toolbox-foobar"
-    )
-)
-
-val extensionJsonFile = layout.buildDirectory.file("generated/extension.json")
-val extensionJson by tasks.registering {
-    inputs.property("extension", extension.toString())
-
-    outputs.file(extensionJsonFile)
-    doLast {
-        generateExtensionJson(extension, extensionJsonFile.get().asFile.toPath())
-    }
-}
-
-changelog {
-    version.set(extension.version)
-    groups.set(emptyList())
-    title.set("Changelog")
 }
 
 licenseReport {
@@ -109,149 +65,9 @@ tasks.compileKotlin {
     compilerOptions.jvmTarget.set(JvmTarget.JVM_21)
 }
 
-tasks.test {
-    useJUnitPlatform()
-}
-
-// Detekt configuration for JetBrains compliance and code quality
-detekt {
-    config.setFrom("$projectDir/detekt.yml")
-    buildUponDefaultConfig = true
-    allRules = false
-}
-
-// Configure detekt for JetBrains compliance and code quality
-tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
-    jvmTarget = "21"
-    reports {
-        html.required.set(true)
-        xml.required.set(true)
-    }
-    // Fail build on detekt issues for JetBrains compliance
-    ignoreFailures = false
-}
-
-
 tasks.jar {
     archiveBaseName.set(extension.id)
     dependsOn(extensionJson)
-    from(extensionJson.get().outputs)
-}
-
-val copyPlugin by tasks.creating(Sync::class.java) {
-    dependsOn(tasks.jar)
-    dependsOn(tasks.getByName("generateLicenseReport"))
-
-    fromCompileDependencies()
-    into(getPluginInstallDir())
-}
-
-fun CopySpec.fromCompileDependencies() {
-    from(tasks.jar)
-    from(extensionJson.get().outputs.files)
-    from("src/main/resources") {
-        include("dependencies.json")
-    }
-    from("src/main/resources") {
-        include("icon.svg")
-        include("pluginIcon.svg")
-    }
-
-    // Copy dependencies, excluding those provided by Toolbox.
-    from(
-        configurations.compileClasspath.map { configuration ->
-            configuration.files.filterNot { file ->
-                listOf(
-                    "kotlin",
-                    "remote-dev-api",
-                    "core-api",
-                    "ui-api",
-                    "annotations",
-                    "localization-api",
-                    "slf4j-api"
-                ).any { file.name.contains(it) }
-            }
-        },
-    )
-}
-
-/**
- * Useful when doing manual local install.
- */
-val pluginPrettyZip by tasks.creating(Zip::class) {
-    archiveBaseName.set(properties("name"))
-    dependsOn(tasks.jar)
-    dependsOn(tasks.getByName("generateLicenseReport"))
-
-    fromCompileDependencies()
-    into(extension.id) // folder like com.coder.toolbox
-}
-
-val pluginZip by tasks.creating(Zip::class) {
-    dependsOn(tasks.jar)
-    dependsOn(tasks.getByName("generateLicenseReport"))
-
-    fromCompileDependencies()
-    archiveBaseName.set(extension.id)
-}
-
-tasks.register("cleanAll", Delete::class.java) {
-    dependsOn(tasks.clean)
-    delete(getPluginInstallDir())
-    delete()
-}
-
-private fun getPluginInstallDir(): Path {
-    val userHome = System.getProperty("user.home").let { Path.of(it) }
-    val toolboxCachesDir = when {
-        SystemInfoRt.isWindows -> System.getenv("LOCALAPPDATA")?.let { Path.of(it) } ?: (userHome / "AppData" / "Local")
-        // currently this is the location that TBA uses on Linux
-        SystemInfoRt.isLinux -> System.getenv("XDG_DATA_HOME")?.let { Path.of(it) } ?: (userHome / ".local" / "share")
-        SystemInfoRt.isMac -> userHome / "Library" / "Caches"
-        else -> error("Unknown os")
-    } / "JetBrains" / "Toolbox"
-
-    val pluginsDir = when {
-        SystemInfoRt.isWindows ||
-                SystemInfoRt.isLinux ||
-                SystemInfoRt.isMac -> toolboxCachesDir
-
-        else -> error("Unknown os")
-    } / "plugins"
-
-    return pluginsDir / extension.id
-}
-
-val publishPlugin by tasks.registering {
-    dependsOn(pluginZip)
-
-    doLast {
-        val pluginMarketplaceToken: String = ""
-
-        println("Plugin Marketplace Token: ${pluginMarketplaceToken.take(5)}*****")
-
-        val instance = PluginRepositoryFactory.create(
-            "https://plugins.jetbrains.com",
-            pluginMarketplaceToken
-        )
-
-        // !!! subsequent updates !!!
-        instance.uploader.uploadUpdateByXmlIdAndFamily(
-            extension.id,  // do not change
-            ProductFamily.TOOLBOX,  // do not change
-            pluginZip.outputs.files.singleFile,  // do not change
-            null,  // do not change. Channels will be available later
-            "Test the steps for publishing toolbox app plugin",
-            true
-        )
-    }
-}
-
-fun properties(key: String) = project.findProperty(key).toString()
-
-gettext {
-    potFile = project.layout.projectDirectory.file("src/main/resources/localization/defaultMessages.pot")
-    keywords = listOf("ptrc:1c,2", "ptrl")
 }
 
 // region will be moved to the gradle plugin late
@@ -268,6 +84,7 @@ data class ExtensionJson(
     val meta: ExtensionJsonMeta,
 )
 
+
 fun generateExtensionJson(extensionJson: ExtensionJson, destinationFile: Path) {
     val descriptor = ToolboxPluginDescriptor(
         id = extensionJson.id,
@@ -280,12 +97,135 @@ fun generateExtensionJson(extensionJson: ExtensionJson, destinationFile: Path) {
             url = extensionJson.meta.url,
         )
     )
+    val extensionJsonString = jacksonObjectMapper().writeValueAsString(descriptor)
     destinationFile.parent.createDirectories()
-    destinationFile.writeText(
-        jacksonMapperBuilder()
-            .enable(SerializationFeature.INDENT_OUTPUT)
-            .build()
-            .writeValueAsString(descriptor)
-    )
+    destinationFile.writeText(extensionJsonString)
 }
+
 // endregion
+
+val extension = ExtensionJson(
+    id = "com.huawei.test.toolbox",
+    version = "0.0.1",
+    meta = ExtensionJsonMeta(
+        name = "Toolbox Foobar",
+        description = "This is only used to test the steps for publishing plugins",
+        vendor = "yusheng-g",
+        url = "https://github.com/yusheng-g/toolbox-foobar",
+    )
+)
+
+val extensionJsonFile = layout.buildDirectory.file("generated/extension.json")
+val extensionJson by tasks.registering {
+    inputs.property("extension", extension.toString())
+
+    outputs.file(extensionJsonFile)
+    doLast {
+        generateExtensionJson(extension, extensionJsonFile.get().asFile.toPath())
+    }
+}
+
+val copyPlugin by tasks.creating(Sync::class.java) {
+    dependsOn(tasks.assemble)
+
+    val userHome = System.getProperty("user.home").let { Path.of(it) }
+    val toolboxCachesDir = when {
+        SystemInfoRt.isWindows -> System.getenv("LOCALAPPDATA")?.let { Path.of(it) } ?: (userHome / "AppData" / "Local")
+        // currently this is the location that TBA uses on Linux
+        SystemInfoRt.isLinux -> System.getenv("XDG_DATA_HOME")?.let { Path.of(it) } ?: (userHome / ".local" / "share")
+        SystemInfoRt.isMac -> userHome / "Library" / "Caches"
+        else -> error("Unknown os")
+    } / "JetBrains" / "Toolbox"
+
+    val pluginsDir = when {
+        SystemInfoRt.isWindows -> toolboxCachesDir / "cache"
+        SystemInfoRt.isLinux || SystemInfoRt.isMac -> toolboxCachesDir
+        else -> error("Unknown os")
+    } / "plugins"
+
+    val targetDir = pluginsDir / extension.id
+
+    from(tasks.jar)
+
+    from(extensionJsonFile)
+
+    from("src/main/resources") {
+        include("dependencies.json")
+        include("icon.svg")
+    }
+
+    into(targetDir)
+
+}
+
+val pluginZip by tasks.registering(Zip::class) {
+    dependsOn(tasks.assemble)
+    dependsOn(tasks.getByName("generateLicenseReport"))
+
+    from(tasks.assemble.get().outputs.files)
+    from(extensionJsonFile)
+    from("src/main/resources") {
+        include("dependencies.json")
+    }
+    from("src/main/resources") {
+        include("icon.svg")
+        rename("icon.svg", "pluginIcon.svg")
+    }
+    from(tasks.jar)
+    archiveBaseName.set("${extension.id}-${extension.version}")
+}
+
+
+val toolboxPluginPropertiesFile = file("toolbox-plugin.properties")
+
+// Work in progress. The public version of Marketplace will not accept the plugin yet
+val uploadPlugin by tasks.registering {
+    dependsOn(pluginZip)
+
+    doLast {
+        val pluginMarketplaceToken: String = if (toolboxPluginPropertiesFile.exists()) {
+            val token = Properties().apply { load(toolboxPluginPropertiesFile.inputStream()) }.getProperty("pluginMarketplaceToken", null)
+            if (token == null) {
+                error("pluginMarketplaceToken does not exist in ${toolboxPluginPropertiesFile.absolutePath}.\n" +
+                        "Please set pluginMarketplaceToken property to a token obtained from the marketplace.")
+            }
+            token
+        } else {
+            error("toolbox-plugin.properties does not exist at ${toolboxPluginPropertiesFile.absolutePath}.\n" +
+                    "Please create the file and set pluginMarketplaceToken property to a token obtained from the marketplace.")
+        }
+        println("Plugin Marketplace Token: ${pluginMarketplaceToken.take(5)}*****")
+
+
+        val instance = PluginRepositoryFactory.
+        create(
+            "https://plugins.jetbrains.com",
+            pluginMarketplaceToken
+        )
+
+        // !!! first upload !!!
+        instance.uploader.uploadNewPlugin(
+            pluginZip.get().outputs.files.singleFile,  // do not change
+            listOf("toolbox", "gateway"), // do not change
+            LicenseUrl.APACHE_2_0, // choose wisely
+            ProductFamily.TOOLBOX, // do not change
+            extension.meta.vendor,  // do not change
+            isHidden = true
+        )
+
+        // !!! subsequent updates !!!
+//        instance.uploader.uploadUpdateByXmlIdAndFamily(
+//            extension.id,  // do not change
+//            ProductFamily.TOOLBOX,  // do not change
+//            pluginZip.get().outputs.files.singleFile,  // do not change
+//            null,  // do not change. Channels will be available later
+//            "Bug fixes and improvements",
+//            true
+//        )
+    }
+}
+
+gettext {
+    potFile = project.layout.projectDirectory.file("src/main/resources/localization/defaultMessages.pot")
+    keywords = listOf("ptrc:1c,2", "ptrl")
+}
